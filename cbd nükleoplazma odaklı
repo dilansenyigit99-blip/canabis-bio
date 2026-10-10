@@ -1,0 +1,90 @@
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+# 1. Klasördeki CBD matrisini otomatik bulalım
+dosya_adi = None
+for f in os.listdir("."):
+  if "cbd" in f.lower() and "ekspr" in f.lower():
+    dosya_adi = f
+    break
+
+if not dosya_adi:
+  dosya_adi = "cbd_ekspr"
+
+print(f"Kullanılan dosya: {dosya_adi}")
+df = pd.read_csv(dosya_adi, sep=None, engine="python")
+
+gene_col = df.columns[0]
+sample_cols = df.columns[1:]
+yari = len(sample_cols) // 2
+grup1 = sample_cols[:yari]
+grup2 = sample_cols[yari:]
+
+
+# 2. İstatistiksel Hesaplama (Fold Change ve p-değeri)
+def hesapla(row):
+  v1 = pd.to_numeric(row[grup1], errors="coerce")
+  v2 = pd.to_numeric(row[grup2], errors="coerce")
+  fc = v2.mean() - v1.mean()
+  _, pval = stats.ttest_ind(v1, v2, nan_policy="omit")
+  return pd.Series([fc, pval], index=["Log2_FC", "p_value"])
+
+
+print("İstatistikler hesaplanıyor...")
+sonuclar = df[sample_cols].apply(hesapla, axis=1)
+df_analiz = pd.concat([df[[gene_col]], sonuclar], axis=1).dropna()
+
+# 3. Anlamlı genleri filtreleyelim (p < 0.05)
+anlamli_df = df_analiz[df_analiz["p_value"] < 0.05].sort_values(
+    by="p_value", ascending=True
+)
+
+print(f"\nToplam Anlamlı Gen Sayısı: {len(anlamli_df)}")
+
+# 4. Sunum İçin Nükleoplazma/Çekirdek Odaklı En Güçlü Genler
+print("\n--- Sunum İçin En Güçlü Gen Adayları (İlk 15) ---")
+print(anlamli_df[[gene_col, "Log2_FC", "p_value"]].head(15))
+
+artan = anlamli_df[anlamli_df["Log2_FC"] > 0]
+azalan = anlamli_df[anlamli_df["Log2_FC"] < 0]
+print(f"\n -> Yukarı Regüle (Artan) Gen Sayısı: {len(artan)}")
+print(f" -> Aşağı Regüle (Azalan) Gen Sayısı: {len(azalan)}")
+
+# 5. Sunum İçin Şık Volkan Grafiği Çizimi ve Kaydı
+plt.figure(figsize=(9, 6))
+plt.scatter(
+    df_analiz["Log2_FC"],
+    -np.log10(df_analiz["p_value"]),
+    c="lightgray",
+    alpha=0.4,
+    label="Diğer Genler",
+)
+plt.scatter(
+    anlamli_df["Log2_FC"],
+    -np.log10(anlamli_df["p_value"]),
+    c="purple",
+    alpha=0.8,
+    s=40,
+    label="Anlamlı Genler (p < 0.05)",
+)
+
+plt.axhline(
+    y=-np.log10(0.05), color="red", linestyle="--", alpha=0.7, label="p = 0.05"
+)
+plt.xlabel("Log2 Fold Change", fontsize=12)
+plt.ylabel("-Log10 (p-value)", fontsize=12)
+plt.title(
+    "CBD Etkisi: Nükleoplazma Odaklı Gen Ekspresyon Dağılımı",
+    fontsize=13,
+    fontweight="bold",
+)
+plt.legend()
+plt.tight_layout()
+
+grafik_adi = "cbd_nukleoplazma_volkan.png"
+plt.savefig(grafik_adi, dpi=300)
+print(f"\nHarika! Sunum grafiğin '{grafik_adi}' adıyla kaydedildi.")
+plt.show()
