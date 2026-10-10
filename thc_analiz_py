@@ -1,0 +1,139 @@
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import scipy.stats as stats
+
+# Doğrudan klasörün içindeki dosya adı
+dosya_yolu = "thc_veri.xlsx"
+
+print("1. Excel dosyası 'TableCPM' sayfasından okunuyor...")
+df_raw = pd.read_excel(dosya_yolu, sheet_name="TableCPM", header=None)
+
+# 3. satır grupları, 4. satır sütun adları
+groups = df_raw.iloc[3, :].values
+cols = df_raw.iloc[4, :].values
+
+groups_ffilled = []
+current_group = None
+for g in groups:
+  if pd.notna(g):
+    current_group = g
+  groups_ffilled.append(current_group)
+
+df_cpm = df_raw.iloc[5:].copy()
+df_cpm.columns = cols
+gene_col = cols[0]
+sample_cols = cols[1:]
+
+col_to_group = {cols[i]: groups_ffilled[i] for i in range(1, len(cols))}
+
+wt_veh = [c for c, g in col_to_group.items() if g == "WT-Veh"]
+wt_thc = [c for c, g in col_to_group.items() if g == "WT-THC"]
+
+# Sayısal değerlere dönüştürme ve NaN'ları temizleme
+for c in sample_cols:
+  df_cpm[c] = pd.to_numeric(df_cpm[c], errors="coerce").fillna(0)
+
+print(
+    "\n2. Ortalama, Log2 Fold Change ve İstatistiksel T-testi hesaplanıyor..."
+)
+df_cpm["Veh_Mean"] = df_cpm[wt_veh].mean(axis=1)
+df_cpm["THC_Mean"] = df_cpm[wt_thc].mean(axis=1)
+df_cpm["Log2_FC"] = df_cpm["THC_Mean"] - df_cpm["Veh_Mean"]
+
+# Gen sütun adını standartlaştıralım
+df_cpm = df_cpm.rename(columns={gene_col: "Gene"})
+
+# Her gen için t-testi p-değeri hesaplama
+p_vals = []
+for idx, row in df_cpm.iterrows():
+  v_vals = row[wt_veh].values.astype(float)
+  t_vals = row[wt_thc].values.astype(float)
+  try:
+    t_stat, p_val = stats.ttest_ind(t_vals, v_vals)
+    if np.isnan(p_val):
+      p_val = 1.0
+  except:
+    p_val = 1.0
+  p_vals.append(p_val)
+
+df_cpm["p_value"] = p_vals
+df_cpm["Neg_Log10_p"] = -np.log10(df_cpm["p_value"] + 1e-300)
+
+# 3. Anlamlılık Eşikleri (p < 0.05 ve |Log2_FC| > 0.5)
+p_thresh = 0.05
+fc_thresh = 0.5
+
+df_cpm["Regulasyon"] = "Anlamsız (Not Significant)"
+df_cpm.loc[
+    (df_cpm["Log2_FC"] > fc_thresh) & (df_cpm["p_value"] < p_thresh),
+    "Regulasyon",
+] = "Artan (Up-regulated)"
+df_cpm.loc[
+    (df_cpm["Log2_FC"] < -fc_thresh) & (df_cpm["p_value"] < p_thresh),
+    "Regulasyon",
+] = "Azalan (Down-regulated)"
+
+print("\nGen Regülasyon Dağılımı:")
+print(df_cpm["Regulasyon"].value_counts())
+
+print("\n3. İnteraktif Volkan Grafiği oluşturuluyor ve kaydediliyor...")
+
+# Plotly ile İnteraktif Scatter Plot
+fig = px.scatter(
+    df_cpm,
+    x="Log2_FC",
+    y="Neg_Log10_p",
+    color="Regulasyon",
+    color_discrete_map={
+        "Artan (Up-regulated)": "crimson",
+        "Azalan (Down-regulated)": "dodgerblue",
+        "Anlamsız (Not Significant)": "darkgray",
+    },
+    hover_data=["Gene", "p_value"],
+    title="GSE242892 WT: THC vs Kontrol (Veh) - İnteraktif Volkan Grafiği",
+    labels={
+        "Log2_FC": "Log2 Fold Change (THC / Kontrol)",
+        "Neg_Log10_p": "-log10(p-value)",
+    },
+)
+
+# Eşik çizgilerini ekleme
+fig.add_hline(
+    y=-np.log10(p_thresh),
+    line_dash="dash",
+    line_color="black",
+    annotation_text="p = 0.05 Eşiği",
+)
+fig.add_vline(
+    x=fc_thresh,
+    line_dash="dot",
+    line_color="gray",
+    annotation_text="Kat Değişim Eşiği",
+)
+fig.add_vline(x=-fc_thresh, line_dash="dot", line_color="gray")
+
+fig.update_traces(marker=dict(size=6, opacity=0.7))
+fig.update_layout(
+    template="plotly_white",
+    title_font_size=16,
+    legend_title_text="Regülasyon Durumu",
+)
+
+# HTML olarak kaydet
+output_html = "interaktif_volkan_grafigi.html"
+fig.write_html(output_html)
+print(f"\n[BAŞARILI] İnteraktif grafik '{output_html}' olarak kaydedildi!")
+
+# 4. THC Anlamlı Genlerini Dosyaya Aktarma Adımı
+sig_thc = df_cpm[df_cpm["Regulasyon"] != "Anlamsız (Not Significant)"]
+thc_gen_listesi = sig_thc["Gene"].dropna().tolist()
+
+with open("thc_anlamli_genler.txt", "w") as f:
+  for g in thc_gen_listesi:
+    f.write(f"{g}\n")
+
+print(
+    f"[BAŞARILI] THC için {len(thc_gen_listesi)} adet anlamlı gen"
+    " 'thc_anlamli_genler.txt' dosyasına kaydedildi!"
+)
